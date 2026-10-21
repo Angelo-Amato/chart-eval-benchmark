@@ -7,7 +7,8 @@ from streamlit_autorefresh import st_autorefresh
 
 # --- CONFIGURATION ---
 DATA_PATH = "human_eval_set.csv"
-IMAGE_DIR = "data/raw" # Updated to reflect new self-contained structure
+IMAGE_DIR = "data/raw"
+RENDER_BUFFER = 2.0  # Seconds to wait for the image to load before strictly counting down
 
 st.set_page_config(page_title="Chart Comparison Human Eval", layout="centered")
 
@@ -31,6 +32,12 @@ if 'start_time' not in st.session_state:
 def load_data():
     return pd.read_csv(DATA_PATH)
 
+# Cache the image reading so we don't hit the hard drive every 1 second during countdown
+@st.cache_data
+def load_image_bytes(image_path):
+    with open(image_path, "rb") as f:
+        return f.read()
+
 df = load_data()
 total_questions = len(df)
 
@@ -53,7 +60,8 @@ def record_answer(answer):
     
     if st.session_state.current_idx < total_questions - 1:
         st.session_state.current_idx += 1
-        st.session_state.start_time = time.time()  # Reset timer for next question
+        # Add a render buffer to the start time to account for network/image loading latency
+        st.session_state.start_time = time.time() + RENDER_BUFFER  
     else:
         st.session_state.quiz_complete = True
 
@@ -72,7 +80,8 @@ if not st.session_state.eval_started:
         
     if st.button("Start Evaluation", use_container_width=True):
         st.session_state.eval_started = True
-        st.session_state.start_time = time.time()
+        # Add a render buffer to the start time to account for initial image loading
+        st.session_state.start_time = time.time() + RENDER_BUFFER
         st.rerun()
 
 # --- QUIZ INTERFACE ---
@@ -89,7 +98,8 @@ elif not st.session_state.quiz_complete:
     # Timer Logic
     if st.session_state.mode == "Quick":
         elapsed = time.time() - st.session_state.start_time
-        remaining = int(st.session_state.time_limit - elapsed)
+        # Prevent remaining time from showing higher than the limit during the buffer phase
+        remaining = min(st.session_state.time_limit, int(st.session_state.time_limit - elapsed))
         
         if remaining <= 0:
             record_answer("unanswered")
@@ -100,11 +110,12 @@ elif not st.session_state.quiz_complete:
     current_row = df.iloc[st.session_state.current_idx]
     sample_id = current_row['id']
     
-    # Original image logic preserved exactly
+    # Load image optimally
     img_path = os.path.join(IMAGE_DIR, f"{sample_id}.png")
     
     if os.path.exists(img_path):
-        st.image(img_path, use_container_width=True)
+        img_bytes = load_image_bytes(img_path)
+        st.image(img_bytes, use_container_width=True)
     else:
         st.error(f"Image not found at: {img_path}")
     
@@ -149,19 +160,14 @@ else:
     st.markdown("### Save Your Score")
     st.write("Enter your initials to sign your results (Pac-Man style!)")
     
-    # Text input limited to 3 characters
     user_initials = st.text_input("Initials:", max_chars=3, placeholder="ABC").upper()
     
     if user_initials:
-        # Add the signature and timestamp to the dataframe
         current_date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         results_df["evaluator_initials"] = user_initials
         results_df["evaluation_date"] = current_date_str
         
-        # Prepare the CSV payload
         csv = results_df.to_csv(index=False).encode('utf-8')
-        
-        # Format the filename with their initials and today's date
         file_date = datetime.now().strftime("%Y%m%d")
         download_filename = f'human_eval_results_{user_initials}_{file_date}.csv'
         
