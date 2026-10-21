@@ -158,18 +158,21 @@ else:
         st.warning("Divergence Found: The AI's blindspots do not strongly correlate with human visual reasoning blindspots.")
         
     st.markdown("### Save Your Score")
-    st.write("Enter your initials to sign your results (Pac-Man style!)")
+    st.write("Enter your name or initials to sign your results:")
     
-    user_initials = st.text_input("Initials:", max_chars=3, placeholder="ABC").upper()
+    user_initials = st.text_input("Name/Initials:", placeholder="e.g., John Smith")
     
     if user_initials:
         current_date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        results_df["evaluator_initials"] = user_initials
+        results_df["evaluator_name"] = user_initials
         results_df["evaluation_date"] = current_date_str
         
         csv = results_df.to_csv(index=False).encode('utf-8')
         file_date = datetime.now().strftime("%Y%m%d")
-        download_filename = f'human_eval_results_{user_initials}_{file_date}.csv'
+        
+        # Format filename to be safe (replace spaces with underscores)
+        safe_name = user_initials.replace(" ", "_")
+        download_filename = f'human_eval_results_{safe_name}_{file_date}.csv'
         
         st.download_button(
             label="Download Human Eval Results as CSV",
@@ -178,4 +181,4 @@ else:
             mime='text/csv',
         )
     else:
-        st.info("Please enter your initials above to unlock the download button.")
+        st.info("Please enter your name or initials above to unlock the download button.")
