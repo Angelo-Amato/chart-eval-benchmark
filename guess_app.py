@@ -9,23 +9,22 @@ from st_supabase_connection import SupabaseConnection
 # --- CONFIGURATION ---
 DATA_PATH = "human_eval_set.csv"
 IMAGE_DIR = "data/raw"
-RENDER_BUFFER = 1.0  # Seconds to wait for the image to load before strictly counting down
+RENDER_BUFFER = 2.0  # Seconds to wait for image to load before strictly counting down
+TIME_LIMIT = 10      # Locked 10-second limit for Quick mode
 
 st.set_page_config(page_title="Chart Comparison Human Eval", layout="centered")
 
 # --- INITIALIZE SESSION STATE ---
-if 'current_idx' not in st.session_state:
-    st.session_state.current_idx = 0
+if 'global_idx' not in st.session_state:
+    st.session_state.global_idx = 0
+if 'q_in_batch' not in st.session_state:
+    st.session_state.q_in_batch = 0
+if 'batch_num' not in st.session_state:
+    st.session_state.batch_num = 1
 if 'responses' not in st.session_state:
     st.session_state.responses = []
-if 'quiz_complete' not in st.session_state:
-    st.session_state.quiz_complete = False
-if 'eval_started' not in st.session_state:
-    st.session_state.eval_started = False
-if 'mode' not in st.session_state:
-    st.session_state.mode = "Reasoning"
-if 'time_limit' not in st.session_state:
-    st.session_state.time_limit = 10
+if 'app_state' not in st.session_state:
+    st.session_state.app_state = "SETUP" # States: SETUP, QUIZ, INTERMISSION, RESULTS
 if 'start_time' not in st.session_state:
     st.session_state.start_time = None
 
@@ -33,7 +32,6 @@ if 'start_time' not in st.session_state:
 def load_data():
     return pd.read_csv(DATA_PATH)
 
-# Cache the image reading so we don't hit the hard drive every 1 second during countdown
 @st.cache_data
 def load_image_bytes(image_path):
     with open(image_path, "rb") as f:
@@ -43,7 +41,7 @@ df = load_data()
 total_questions = len(df)
 
 def record_answer(answer):
-    current_row = df.iloc[st.session_state.current_idx]
+    current_row = df.iloc[st.session_state.global_idx]
     
     # Check if human is correct
     if answer == "unanswered":
@@ -52,55 +50,68 @@ def record_answer(answer):
         human_pred_diff = (answer == "Different")
         is_correct = (human_pred_diff == current_row['actual_diff'])
     
+    # Tag which mode they were in for this specific answer
+    current_mode = "Reasoning" if st.session_state.q_in_batch < 5 else "Quick"
+    
     st.session_state.responses.append({
         'id': current_row['id'],
         'human_answer': answer,
         'human_correct': is_correct,
-        'machine_difficulty': current_row['machine_difficulty']
+        'machine_difficulty': current_row['machine_difficulty'],
+        'eval_mode': current_mode,
+        'batch_num': st.session_state.batch_num
     })
     
-    if st.session_state.current_idx < total_questions - 1:
-        st.session_state.current_idx += 1
-        # Add a render buffer to the start time to account for network/image loading latency
-        st.session_state.start_time = time.time() + RENDER_BUFFER  
+    # Advance counters
+    st.session_state.global_idx += 1
+    st.session_state.q_in_batch += 1
+    
+    # Determine next state
+    if st.session_state.global_idx >= total_questions:
+        st.session_state.app_state = "RESULTS"
+    elif st.session_state.q_in_batch >= 10:
+        st.session_state.app_state = "INTERMISSION"
     else:
-        st.session_state.quiz_complete = True
+        # Just move to next question
+        st.session_state.start_time = time.time() + RENDER_BUFFER
 
-# --- SETUP SCREEN ---
-if not st.session_state.eval_started:
+# --- 1. SETUP SCREEN ---
+if st.session_state.app_state == "SETUP":
     st.title("Human Evaluation Setup")
-    st.markdown("Select your evaluation mode:")
+    st.markdown("""
+    **Instructions:**
+    This evaluation is split into batches of 10 charts. 
+    * **First 5 charts:** *Reasoning Mode* (Take as much time as you need).
+    * **Next 5 charts:** *Quick Mode* (Locked to 10 seconds per chart).
     
-    st.session_state.mode = st.radio("Mode", ["Reasoning", "Quick"], horizontal=True)
+    After each batch of 10, you can choose to continue or save your results.
+    """)
     
-    if st.session_state.mode == "Quick":
-        st.session_state.time_limit = st.number_input("Time limit per sample (seconds):", min_value=3, max_value=60, value=10)
-        st.info(f"Each chart will be displayed for a maximum of {st.session_state.time_limit} seconds. If time expires, the sample is marked as 'unanswered'.")
-    else:
-        st.info("Take as much time as you need to analyze each chart.")
-        
-    if st.button("Start Evaluation", use_container_width=True):
-        st.session_state.eval_started = True
-        # Add a render buffer to the start time to account for initial image loading
+    if st.button("Start Batch 1", use_container_width=True):
+        st.session_state.app_state = "QUIZ"
         st.session_state.start_time = time.time() + RENDER_BUFFER
         st.rerun()
 
-# --- QUIZ INTERFACE ---
-elif not st.session_state.quiz_complete:
+# --- 2. QUIZ INTERFACE ---
+elif st.session_state.app_state == "QUIZ":
     
-    # Trigger background auto-refresh every 1000ms (1 sec) ONLY in Quick mode
-    if st.session_state.mode == "Quick":
-        st_autorefresh(interval=1000, key=f"timer_{st.session_state.current_idx}")
+    is_quick_mode = (st.session_state.q_in_batch >= 5)
+    current_mode_label = "Quick (10s limit)" if is_quick_mode else "Reasoning (Untimed)"
+    
+    # Trigger background auto-refresh every 1000ms ONLY in Quick mode
+    if is_quick_mode:
+        st_autorefresh(interval=1000, key=f"timer_{st.session_state.global_idx}")
         
     st.title("Human Evaluation: Chart Comparison")
-    st.progress((st.session_state.current_idx) / total_questions)
-    st.write(f"**Question {st.session_state.current_idx + 1} of {total_questions}** | Mode: **{st.session_state.mode}**")
+    st.progress(st.session_state.global_idx / total_questions)
+    
+    st.write(f"**Batch {st.session_state.batch_num}** | Question {st.session_state.q_in_batch + 1} of 10")
+    st.write(f"Current Mode: **{current_mode_label}**")
     
     # Timer Logic
-    if st.session_state.mode == "Quick":
+    if is_quick_mode:
         elapsed = time.time() - st.session_state.start_time
-        # Prevent remaining time from showing higher than the limit during the buffer phase
-        remaining = min(st.session_state.time_limit, int(st.session_state.time_limit - elapsed))
+        remaining = min(TIME_LIMIT, int(TIME_LIMIT - elapsed))
         
         if remaining <= 0:
             record_answer("unanswered")
@@ -108,7 +119,7 @@ elif not st.session_state.quiz_complete:
         else:
             st.warning(f"⏱️ Time Remaining: **{remaining}s**")
 
-    current_row = df.iloc[st.session_state.current_idx]
+    current_row = df.iloc[st.session_state.global_idx]
     sample_id = current_row['id']
     
     # Load image optimally
@@ -124,9 +135,28 @@ elif not st.session_state.quiz_complete:
     
     col1, col2 = st.columns(2)
     with col1:
-        st.button("They are the SAME", key=f"same_{st.session_state.current_idx}", on_click=record_answer, args=("Same",), use_container_width=True)
+        st.button("They are the SAME", key=f"same_{st.session_state.global_idx}", on_click=record_answer, args=("Same",), use_container_width=True)
     with col2:
-        st.button("They are DIFFERENT", key=f"diff_{st.session_state.current_idx}", on_click=record_answer, args=("Different",), use_container_width=True)
+        st.button("They are DIFFERENT", key=f"diff_{st.session_state.global_idx}", on_click=record_answer, args=("Different",), use_container_width=True)
+
+# --- 3. INTERMISSION SCREEN ---
+elif st.session_state.app_state == "INTERMISSION":
+    st.title(f"Batch {st.session_state.batch_num} Complete! 🎉")
+    st.write(f"You've completed {st.session_state.global_idx} charts so far.")
+    st.write("Would you like to complete another set of 10, or stop here and save your data?")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Continue to Next Batch", use_container_width=True):
+            st.session_state.batch_num += 1
+            st.session_state.q_in_batch = 0
+            st.session_state.app_state = "QUIZ"
+            st.session_state.start_time = time.time() + RENDER_BUFFER
+            st.rerun()
+    with col2:
+        if st.button("Finish and Save", use_container_width=True):
+            st.session_state.app_state = "RESULTS"
+            st.rerun()
 
 # --- 4. RESULTS DASHBOARD ---
 elif st.session_state.app_state == "RESULTS":
@@ -172,7 +202,6 @@ elif st.session_state.app_state == "RESULTS":
                         conn = st.connection("supabase", type=SupabaseConnection)
                         
                         # 2. Format the session state list of dicts for the database insertion
-                        # Supabase expects a list of dictionaries where keys perfectly match the SQL column names
                         db_payload = []
                         for response in st.session_state.responses:
                             db_payload.append({
@@ -190,7 +219,7 @@ elif st.session_state.app_state == "RESULTS":
                         
                         st.session_state.data_saved = True
                         st.success("Results successfully saved to the database! You may close this tab.")
-                        st.rerun() # Refresh to hide the submit button and show the success message permanently
+                        st.rerun() 
                         
                     except Exception as e:
                         st.error(f"Error saving to database: {e}")
