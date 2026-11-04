@@ -9,13 +9,35 @@ from st_supabase_connection import SupabaseConnection
 # --- CONFIGURATION ---
 DATA_PATH = "human_eval_set.csv"
 IMAGE_DIR = "data/raw"
-RENDER_BUFFER = 2.0  # Seconds to wait for image to load before strictly counting down
+RENDER_BUFFER = 0.5  # Seconds to wait for image to load before strictly counting down
 TIME_LIMIT = 10      # Locked 10-second limit for Quick mode
 
 st.set_page_config(page_title="Chart Comparison Human Eval", layout="centered")
 
+# --- FEEDBACK FORM (SIDEBAR) ---
+# Putting this at the top level ensures it is accessible on every screen
+with st.sidebar:
+    st.header("📝 Leave Feedback")
+    st.write("Find a bug or have a suggestion? Let us know!")
+    
+    with st.form("feedback_form", clear_on_submit=True):
+        fb_name = st.text_input("Name/Initials (optional)")
+        fb_text = st.text_area("Your feedback...", required=True)
+        submitted = st.form_submit_button("Submit")
+        
+        if submitted:
+            with st.spinner("Sending..."):
+                try:
+                    conn = st.connection("supabase", type=SupabaseConnection)
+                    conn.table("app_feedback").insert({
+                        "user_name": str(fb_name),
+                        "feedback_text": str(fb_text)
+                    }, count="None").execute()
+                    st.success("Feedback sent! Thank you.")
+                except Exception as e:
+                    st.error(f"Error saving feedback: {e}")
+
 # --- PARSE URL FOR TWO DIFFERENT LINKS ---
-# This reads ?mode=Quick or ?mode=Reasoning from the URL
 if "mode" in st.query_params:
     target_mode = st.query_params["mode"].capitalize()
     if target_mode not in ["Quick", "Reasoning"]:
@@ -202,7 +224,7 @@ elif st.session_state.app_state == "RESULTS":
                                 "evaluator_name": str(user_initials),
                                 "sample_id": str(response['id']),
                                 "human_answer": str(response['human_answer']),
-                                "human_correct": bool(response['human_correct']), # explicitly cast to pure Python bool
+                                "human_correct": bool(response['human_correct']),
                                 "machine_difficulty": str(response['machine_difficulty']),
                                 "eval_mode": str(response['eval_mode']),
                                 "batch_num": int(response['batch_num'])
