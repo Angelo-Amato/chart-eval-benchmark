@@ -22,20 +22,25 @@ with st.sidebar:
     
     with st.form("feedback_form", clear_on_submit=True):
         fb_name = st.text_input("Name/Initials (optional)")
-        fb_text = st.text_area("Your feedback...", required=True)
+        # Removed required=True to prevent Streamlit TypeError
+        fb_text = st.text_area("Your feedback...") 
         submitted = st.form_submit_button("Submit")
         
         if submitted:
-            with st.spinner("Sending..."):
-                try:
-                    conn = st.connection("supabase", type=SupabaseConnection)
-                    conn.table("app_feedback").insert({
-                        "user_name": str(fb_name),
-                        "feedback_text": str(fb_text)
-                    }, count="None").execute()
-                    st.success("Feedback sent! Thank you.")
-                except Exception as e:
-                    st.error(f"Error saving feedback: {e}")
+            # Manually check if the feedback text is empty
+            if not fb_text.strip():
+                st.error("Please enter some feedback before submitting.")
+            else:
+                with st.spinner("Sending..."):
+                    try:
+                        conn = st.connection("supabase", type=SupabaseConnection)
+                        conn.table("app_feedback").insert({
+                            "user_name": str(fb_name),
+                            "feedback_text": str(fb_text)
+                        }, count="None").execute()
+                        st.success("Feedback sent! Thank you.")
+                    except Exception as e:
+                        st.error(f"Error saving feedback: {e}")
 
 # --- PARSE URL FOR TWO DIFFERENT LINKS ---
 if "mode" in st.query_params:
@@ -151,97 +156,3 @@ elif st.session_state.app_state == "QUIZ":
     
     is_quick_mode = (target_mode == "Quick")
     total_in_batch = len(st.session_state.batch_df)
-    
-    if is_quick_mode:
-        st_autorefresh(interval=1000, key=f"timer_{st.session_state.q_in_batch}")
-        
-    st.title(f"Evaluation: {target_mode} Mode")
-    st.progress(st.session_state.q_in_batch / total_in_batch)
-    st.write(f"**Batch {st.session_state.batch_num}** | Question {st.session_state.q_in_batch + 1} of {total_in_batch}")
-    
-    # Timer Logic
-    if is_quick_mode:
-        elapsed = time.time() - st.session_state.start_time
-        remaining = min(TIME_LIMIT, int(TIME_LIMIT - elapsed))
-        
-        if remaining <= 0:
-            record_answer("unanswered")
-            st.rerun()
-        else:
-            st.warning(f"⏱️ Time Remaining: **{remaining}s**")
-
-    current_row = st.session_state.batch_df.iloc[st.session_state.q_in_batch]
-    sample_id = current_row['id']
-    
-    img_path = os.path.join(IMAGE_DIR, f"{sample_id}.png")
-    
-    if os.path.exists(img_path):
-        img_bytes = load_image_bytes(img_path)
-        st.image(img_bytes, use_container_width=True)
-    else:
-        st.error(f"Image not found at: {img_path}")
-    
-    st.markdown("### Are these two charts exactly the same, or are there informational differences?")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.button("They are the SAME", key=f"same_{st.session_state.q_in_batch}", on_click=record_answer, args=("Same",), use_container_width=True)
-    with col2:
-        st.button("They are DIFFERENT", key=f"diff_{st.session_state.q_in_batch}", on_click=record_answer, args=("Different",), use_container_width=True)
-
-# --- 3. RESULTS DASHBOARD ---
-elif st.session_state.app_state == "RESULTS":
-    st.title("Evaluation Complete! 📊")
-    st.balloons()
-    
-    results_df = pd.DataFrame(st.session_state.responses)
-    
-    if not results_df.empty:
-        overall_acc = results_df['human_correct'].mean() * 100
-        unanswered_count = len(results_df[results_df['human_answer'] == 'unanswered'])
-        
-        st.markdown("### Your Performance")
-        col1, col2 = st.columns(2)
-        col1.metric("Overall Score", f"{overall_acc:.1f}%")
-        col2.metric("Timeouts", unanswered_count)
-        
-        st.markdown("---")
-        st.markdown("### Save Your Score")
-        user_initials = st.text_input("Name/Initials:", placeholder="e.g., John Smith")
-        
-        if 'data_saved' not in st.session_state:
-            st.session_state.data_saved = False
-            
-        if user_initials and not st.session_state.data_saved:
-            if st.button("Submit Results to Database", use_container_width=True):
-                with st.spinner("Saving to database..."):
-                    try:
-                        conn = st.connection("supabase", type=SupabaseConnection)
-                        
-                        db_payload = []
-                        for response in st.session_state.responses:
-                            db_payload.append({
-                                "evaluator_name": str(user_initials),
-                                "sample_id": str(response['id']),
-                                "human_answer": str(response['human_answer']),
-                                "human_correct": bool(response['human_correct']),
-                                "machine_difficulty": str(response['machine_difficulty']),
-                                "eval_mode": str(response['eval_mode']),
-                                "batch_num": int(response['batch_num'])
-                            })
-                            
-                        conn.table("evaluation_results").insert(db_payload, count="None").execute()
-                        
-                        st.session_state.data_saved = True
-                        st.success("Results successfully saved to the database! You may close this tab.")
-                        st.rerun() 
-                        
-                    except Exception as e:
-                        st.error(f"Error saving to database: {e}")
-                        
-        elif st.session_state.data_saved:
-            st.success(f"Thank you, {user_initials}! Your results are safely stored.")
-        else:
-            st.info("Please enter your name or initials to unlock the submit button.")
-    else:
-        st.warning("No data recorded.")
