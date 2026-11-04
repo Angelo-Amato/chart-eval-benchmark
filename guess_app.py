@@ -4,11 +4,12 @@ import os
 import time
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
+from st_supabase_connection import SupabaseConnection
 
 # --- CONFIGURATION ---
 DATA_PATH = "human_eval_set.csv"
 IMAGE_DIR = "data/raw"
-RENDER_BUFFER = 2.0  # Seconds to wait for the image to load before strictly counting down
+RENDER_BUFFER = 1.0  # Seconds to wait for the image to load before strictly counting down
 
 st.set_page_config(page_title="Chart Comparison Human Eval", layout="centered")
 
@@ -127,58 +128,77 @@ elif not st.session_state.quiz_complete:
     with col2:
         st.button("They are DIFFERENT", key=f"diff_{st.session_state.current_idx}", on_click=record_answer, args=("Different",), use_container_width=True)
 
-# --- RESULTS DASHBOARD ---
-else:
-    st.title("Evaluation Complete! 🎉")
+# --- 4. RESULTS DASHBOARD ---
+elif st.session_state.app_state == "RESULTS":
+    st.title("Evaluation Complete! 📊")
     st.balloons()
     
     results_df = pd.DataFrame(st.session_state.responses)
     
-    # Calculate Correlations
-    hard_subset = results_df[results_df['machine_difficulty'] == 'Hard']
-    easy_subset = results_df[results_df['machine_difficulty'] == 'Easy']
-    
-    human_acc_hard = hard_subset['human_correct'].mean() * 100 if len(hard_subset) > 0 else 0
-    human_acc_easy = easy_subset['human_correct'].mean() * 100 if len(easy_subset) > 0 else 0
-    overall_acc = results_df['human_correct'].mean() * 100
-    unanswered_count = len(results_df[results_df['human_answer'] == 'unanswered'])
-    
-    st.markdown("### Human vs. Machine Correlation")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Overall Score", f"{overall_acc:.1f}%")
-    col2.metric("Score on 'Easy'", f"{human_acc_easy:.1f}%")
-    col3.metric("Score on 'Hard'", f"{human_acc_hard:.1f}%")
-    col4.metric("Unanswered", unanswered_count)
-    
-    st.markdown("---")
-    if human_acc_hard < human_acc_easy:
-        st.success("Correlation Found: Humans also struggled with the charts the AI found difficult.")
+    if not results_df.empty:
+        # Calculate overall accuracy
+        overall_acc = results_df['human_correct'].mean() * 100
+        unanswered_count = len(results_df[results_df['human_answer'] == 'unanswered'])
+        
+        # Calculate accuracy by mode
+        reasoning_subset = results_df[results_df['eval_mode'] == 'Reasoning']
+        quick_subset = results_df[results_df['eval_mode'] == 'Quick']
+        
+        acc_reasoning = reasoning_subset['human_correct'].mean() * 100 if not reasoning_subset.empty else 0
+        acc_quick = quick_subset['human_correct'].mean() * 100 if not quick_subset.empty else 0
+        
+        st.markdown("### Your Performance")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Overall Score", f"{overall_acc:.1f}%")
+        col2.metric("Reasoning Score", f"{acc_reasoning:.1f}%")
+        col3.metric("Quick Score", f"{acc_quick:.1f}%")
+        col4.metric("Timeouts", unanswered_count)
+        
+        st.markdown("---")
+        
+        st.markdown("### Save Your Score")
+        user_initials = st.text_input("Name/Initials:", placeholder="e.g., John Smith")
+        
+        # We need a boolean to track if data was successfully submitted
+        if 'data_saved' not in st.session_state:
+            st.session_state.data_saved = False
+            
+        if user_initials and not st.session_state.data_saved:
+            if st.button("Submit Results to Database", use_container_width=True):
+                with st.spinner("Saving to database..."):
+                    try:
+                        # 1. Initialize Supabase Connection
+                        conn = st.connection("supabase", type=SupabaseConnection)
+                        
+                        # 2. Format the session state list of dicts for the database insertion
+                        # Supabase expects a list of dictionaries where keys perfectly match the SQL column names
+                        db_payload = []
+                        for response in st.session_state.responses:
+                            db_payload.append({
+                                "evaluator_name": user_initials,
+                                "sample_id": response['id'],
+                                "human_answer": response['human_answer'],
+                                "human_correct": response['human_correct'],
+                                "machine_difficulty": response['machine_difficulty'],
+                                "eval_mode": response['eval_mode'],
+                                "batch_num": response['batch_num']
+                            })
+                            
+                        # 3. Perform the bulk insert
+                        conn.table("evaluation_results").insert(db_payload, count="None").execute()
+                        
+                        st.session_state.data_saved = True
+                        st.success("Results successfully saved to the database! You may close this tab.")
+                        st.rerun() # Refresh to hide the submit button and show the success message permanently
+                        
+                    except Exception as e:
+                        st.error(f"Error saving to database: {e}")
+                        
+        elif st.session_state.data_saved:
+            st.success(f"Thank you, {user_initials}! Your results are safely stored.")
+            
+        else:
+            st.info("Please enter your name or initials to unlock the submit button.")
     else:
-        st.warning("Divergence Found: The AI's blindspots do not strongly correlate with human visual reasoning blindspots.")
-        
-    st.markdown("### Save Your Score")
-    st.write("Enter your name or initials to sign your results:")
-    
-    user_initials = st.text_input("Name/Initials:", placeholder="e.g., John Smith")
-    
-    if user_initials:
-        current_date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        results_df["evaluator_name"] = user_initials
-        results_df["evaluation_date"] = current_date_str
-        
-        csv = results_df.to_csv(index=False).encode('utf-8')
-        file_date = datetime.now().strftime("%Y%m%d")
-        
-        # Format filename to be safe (replace spaces with underscores)
-        safe_name = user_initials.replace(" ", "_")
-        download_filename = f'human_eval_results_{safe_name}_{file_date}.csv'
-        
-        st.download_button(
-            label="Download Human Eval Results as CSV",
-            data=csv,
-            file_name=download_filename,
-            mime='text/csv',
-        )
-    else:
-        st.info("Please enter your name or initials above to unlock the download button.")
+        st.warning("No data recorded.")
