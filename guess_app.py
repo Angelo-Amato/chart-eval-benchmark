@@ -12,22 +12,23 @@ IMAGE_DIR = "data/raw"
 RENDER_BUFFER = 0.5  # Seconds to wait for image to load before strictly counting down
 TIME_LIMIT = 10      # Locked 10-second limit for Quick mode
 
-st.set_page_config(page_title="Chart Comparison Human Eval", layout="centered")
+# Reverted to default sidebar state (hidden on mobile/small screens, user must click arrow)
+st.set_page_config(
+    page_title="Chart Comparison Human Eval", 
+    layout="centered"
+)
 
 # --- FEEDBACK FORM (SIDEBAR) ---
-# Putting this at the top level ensures it is accessible on every screen
 with st.sidebar:
     st.header("📝 Leave Feedback")
     st.write("Find a bug or have a suggestion? Let us know!")
     
     with st.form("feedback_form", clear_on_submit=True):
         fb_name = st.text_input("Name/Initials (optional)")
-        # Removed required=True to prevent Streamlit TypeError
         fb_text = st.text_area("Your feedback...") 
         submitted = st.form_submit_button("Submit")
         
         if submitted:
-            # Manually check if the feedback text is empty
             if not fb_text.strip():
                 st.error("Please enter some feedback before submitting.")
             else:
@@ -68,7 +69,6 @@ if 'batch_num' not in st.session_state:
 def load_data():
     return pd.read_csv(DATA_PATH)
 
-# Cache the image reading so we don't hit the hard drive repeatedly
 @st.cache_data
 def load_image_bytes(image_path):
     with open(image_path, "rb") as f:
@@ -76,7 +76,6 @@ def load_image_bytes(image_path):
 
 df = load_data()
 
-# Calculate maximum possible batches based on having 5 Hard and 5 Easy per batch
 hard_df = df[df['machine_difficulty'] == 'Hard']
 easy_df = df[df['machine_difficulty'] == 'Easy']
 max_batches = min(len(hard_df) // 5, len(easy_df) // 5)
@@ -90,7 +89,6 @@ def get_batch_data(batch_number):
     batch_hard = hard_df.iloc[start_idx:end_idx]
     batch_easy = easy_df.iloc[start_idx:end_idx]
     
-    # Combine the 5 hard and 5 easy, then shuffle the row order
     combined = pd.concat([batch_hard, batch_easy])
     return combined.sample(frac=1).reset_index(drop=True)
 
@@ -114,7 +112,6 @@ def record_answer(answer):
     
     st.session_state.q_in_batch += 1
     
-    # Check if batch is complete (10 questions)
     if st.session_state.q_in_batch >= len(st.session_state.batch_df):
         st.session_state.app_state = "RESULTS"
     else:
@@ -135,16 +132,17 @@ if st.session_state.app_state == "SETUP":
     
     selected_batch = st.number_input("Batch Number", min_value=1, max_value=max_batches, value=1)
     
+    # Kept the visual hint
+    st.caption("💡 **Tip:** You can click the **> arrow** in the top left corner at any time to open the sidebar and leave feedback or report a bug.")
+    
     if st.button("Start Evaluation", use_container_width=True):
         st.session_state.batch_num = selected_batch
         st.session_state.batch_df = get_batch_data(selected_batch)
         
-        # --- CACHE PRE-WARMING LOOP ---
         with st.spinner("Pre-loading charts to ensure accurate timing..."):
             for _, row in st.session_state.batch_df.iterrows():
                 img_path = os.path.join(IMAGE_DIR, f"{row['id']}.png")
                 if os.path.exists(img_path):
-                    # Calling this here forces Streamlit to save the bytes to RAM
                     load_image_bytes(img_path) 
                     
         st.session_state.app_state = "QUIZ"
@@ -156,3 +154,96 @@ elif st.session_state.app_state == "QUIZ":
     
     is_quick_mode = (target_mode == "Quick")
     total_in_batch = len(st.session_state.batch_df)
+    
+    if is_quick_mode:
+        st_autorefresh(interval=1000, key=f"timer_{st.session_state.q_in_batch}")
+        
+    st.title(f"Evaluation: {target_mode} Mode")
+    st.progress(st.session_state.q_in_batch / total_in_batch)
+    st.write(f"**Batch {st.session_state.batch_num}** | Question {st.session_state.q_in_batch + 1} of {total_in_batch}")
+    
+    if is_quick_mode:
+        elapsed = time.time() - st.session_state.start_time
+        remaining = min(TIME_LIMIT, int(TIME_LIMIT - elapsed))
+        
+        if remaining <= 0:
+            record_answer("unanswered")
+            st.rerun()
+        else:
+            st.warning(f"⏱️ Time Remaining: **{remaining}s**")
+
+    current_row = st.session_state.batch_df.iloc[st.session_state.q_in_batch]
+    sample_id = current_row['id']
+    
+    img_path = os.path.join(IMAGE_DIR, f"{sample_id}.png")
+    
+    if os.path.exists(img_path):
+        img_bytes = load_image_bytes(img_path)
+        st.image(img_bytes, use_container_width=True)
+    else:
+        st.error(f"Image not found at: {img_path}")
+    
+    st.markdown("### Are these two charts exactly the same, or are there informational differences?")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.button("They are the SAME", key=f"same_{st.session_state.q_in_batch}", on_click=record_answer, args=("Same",), use_container_width=True)
+    with col2:
+        st.button("They are DIFFERENT", key=f"diff_{st.session_state.q_in_batch}", on_click=record_answer, args=("Different",), use_container_width=True)
+
+# --- 3. RESULTS DASHBOARD ---
+elif st.session_state.app_state == "RESULTS":
+    st.title("Evaluation Complete! 📊")
+    st.balloons()
+    
+    results_df = pd.DataFrame(st.session_state.responses)
+    
+    if not results_df.empty:
+        overall_acc = results_df['human_correct'].mean() * 100
+        unanswered_count = len(results_df[results_df['human_answer'] == 'unanswered'])
+        
+        st.markdown("### Your Performance")
+        col1, col2 = st.columns(2)
+        col1.metric("Overall Score", f"{overall_acc:.1f}%")
+        col2.metric("Timeouts", unanswered_count)
+        
+        st.markdown("---")
+        st.markdown("### Save Your Score")
+        user_initials = st.text_input("Name/Initials:", placeholder="e.g., John Smith")
+        
+        if 'data_saved' not in st.session_state:
+            st.session_state.data_saved = False
+            
+        if user_initials and not st.session_state.data_saved:
+            if st.button("Submit Results to Database", use_container_width=True):
+                with st.spinner("Saving to database..."):
+                    try:
+                        conn = st.connection("supabase", type=SupabaseConnection)
+                        
+                        db_payload = []
+                        for response in st.session_state.responses:
+                            db_payload.append({
+                                "evaluator_name": str(user_initials),
+                                "sample_id": str(response['id']),
+                                "human_answer": str(response['human_answer']),
+                                "human_correct": bool(response['human_correct']),
+                                "machine_difficulty": str(response['machine_difficulty']),
+                                "eval_mode": str(response['eval_mode']),
+                                "batch_num": int(response['batch_num'])
+                            })
+                            
+                        conn.table("evaluation_results").insert(db_payload, count="None").execute()
+                        
+                        st.session_state.data_saved = True
+                        st.success("Results successfully saved to the database! You may close this tab.")
+                        st.rerun() 
+                        
+                    except Exception as e:
+                        st.error(f"Error saving to database: {e}")
+                        
+        elif st.session_state.data_saved:
+            st.success(f"Thank you, {user_initials}! Your results are safely stored.")
+        else:
+            st.info("Please enter your name or initials to unlock the submit button.")
+    else:
+        st.warning("No data recorded.")
