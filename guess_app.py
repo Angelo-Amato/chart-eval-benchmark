@@ -9,39 +9,40 @@ from st_supabase_connection import SupabaseConnection
 # --- CONFIGURATION ---
 DATA_PATH = "human_eval_set.csv"
 IMAGE_DIR = "data/raw"
-RENDER_BUFFER = 0.5  # Seconds to wait for image to load before strictly counting down
+RENDER_BUFFER = 0.5  # Updated to 0.5 seconds
 TIME_LIMIT = 10      # Locked 10-second limit for Quick mode
 
-# Reverted to default sidebar state (hidden on mobile/small screens, user must click arrow)
 st.set_page_config(
     page_title="Chart Comparison Human Eval", 
     layout="centered"
 )
 
-# --- FEEDBACK FORM (SIDEBAR) ---
-with st.sidebar:
-    st.header("📝 Leave Feedback")
-    st.write("Find a bug or have a suggestion? Let us know!")
-    
-    with st.form("feedback_form", clear_on_submit=True):
-        fb_name = st.text_input("Name/Initials (optional)")
-        fb_text = st.text_area("Your feedback...") 
-        submitted = st.form_submit_button("Submit")
-        
-        if submitted:
-            if not fb_text.strip():
-                st.error("Please enter some feedback before submitting.")
-            else:
-                with st.spinner("Sending..."):
-                    try:
-                        conn = st.connection("supabase", type=SupabaseConnection)
-                        conn.table("app_feedback").insert({
-                            "user_name": str(fb_name),
-                            "feedback_text": str(fb_text)
-                        }, count="None").execute()
-                        st.success("Feedback sent! Thank you.")
-                    except Exception as e:
-                        st.error(f"Error saving feedback: {e}")
+# --- TOP-RIGHT FEEDBACK POPOVER ---
+# This creates an invisible left column and a right column for the button,
+# pushing the "📝 Feedback" button to the top right of the page.
+col_spacer, col_feedback = st.columns([0.8, 0.2])
+with col_feedback:
+    with st.popover("📝 Feedback"):
+        st.write("Find a bug or have a suggestion?")
+        with st.form("feedback_form", clear_on_submit=True):
+            fb_name = st.text_input("Name/Initials (optional)")
+            fb_text = st.text_area("Your feedback...") 
+            submitted = st.form_submit_button("Submit")
+            
+            if submitted:
+                if not fb_text.strip():
+                    st.error("Please enter some feedback.")
+                else:
+                    with st.spinner("Sending..."):
+                        try:
+                            conn = st.connection("supabase", type=SupabaseConnection)
+                            conn.table("app_feedback").insert({
+                                "user_name": str(fb_name),
+                                "feedback_text": str(fb_text)
+                            }, count="None").execute()
+                            st.success("Feedback sent!")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
 
 # --- PARSE URL FOR TWO DIFFERENT LINKS ---
 if "mode" in st.query_params:
@@ -131,9 +132,6 @@ if st.session_state.app_state == "SETUP":
     st.write("Please select your assigned batch number:")
     
     selected_batch = st.number_input("Batch Number", min_value=1, max_value=max_batches, value=1)
-    
-    # Kept the visual hint
-    st.caption("💡 **Tip:** You can click the **> arrow** in the top left corner at any time to open the sidebar and leave feedback or report a bug.")
     
     if st.button("Start Evaluation", use_container_width=True):
         st.session_state.batch_num = selected_batch
