@@ -9,8 +9,8 @@ from st_supabase_connection import SupabaseConnection
 # --- CONFIGURATION ---
 DATA_PATH = "human_eval_set.csv"
 IMAGE_DIR = "data/raw"
-RENDER_BUFFER = 2.0  
-TIME_LIMIT = 10      
+RENDER_BUFFER = 2.0  # Seconds to wait for image to load before strictly counting down
+TIME_LIMIT = 10      # Locked 10-second limit for Quick mode
 
 st.set_page_config(page_title="Chart Comparison Human Eval", layout="centered")
 
@@ -41,6 +41,7 @@ if 'batch_num' not in st.session_state:
 def load_data():
     return pd.read_csv(DATA_PATH)
 
+# Cache the image reading so we don't hit the hard drive repeatedly
 @st.cache_data
 def load_image_bytes(image_path):
     with open(image_path, "rb") as f:
@@ -110,6 +111,15 @@ if st.session_state.app_state == "SETUP":
     if st.button("Start Evaluation", use_container_width=True):
         st.session_state.batch_num = selected_batch
         st.session_state.batch_df = get_batch_data(selected_batch)
+        
+        # --- CACHE PRE-WARMING LOOP ---
+        with st.spinner("Pre-loading charts to ensure accurate timing..."):
+            for _, row in st.session_state.batch_df.iterrows():
+                img_path = os.path.join(IMAGE_DIR, f"{row['id']}.png")
+                if os.path.exists(img_path):
+                    # Calling this here forces Streamlit to save the bytes to RAM
+                    load_image_bytes(img_path) 
+                    
         st.session_state.app_state = "QUIZ"
         st.session_state.start_time = time.time() + RENDER_BUFFER
         st.rerun()
@@ -156,7 +166,6 @@ elif st.session_state.app_state == "QUIZ":
         st.button("They are the SAME", key=f"same_{st.session_state.q_in_batch}", on_click=record_answer, args=("Same",), use_container_width=True)
     with col2:
         st.button("They are DIFFERENT", key=f"diff_{st.session_state.q_in_batch}", on_click=record_answer, args=("Different",), use_container_width=True)
-
 
 # --- 3. RESULTS DASHBOARD ---
 elif st.session_state.app_state == "RESULTS":
