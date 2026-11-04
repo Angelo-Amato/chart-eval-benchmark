@@ -199,13 +199,13 @@ elif st.session_state.app_state == "RESULTS":
                         db_payload = []
                         for response in st.session_state.responses:
                             db_payload.append({
-                                "evaluator_name": user_initials,
-                                "sample_id": response['id'],
-                                "human_answer": response['human_answer'],
-                                "human_correct": response['human_correct'],
-                                "machine_difficulty": response['machine_difficulty'],
-                                "eval_mode": response['eval_mode'],
-                                "batch_num": response['batch_num']
+                                "evaluator_name": str(user_initials),
+                                "sample_id": str(response['id']),
+                                "human_answer": str(response['human_answer']),
+                                "human_correct": bool(response['human_correct']), # explicitly cast to pure Python bool
+                                "machine_difficulty": str(response['machine_difficulty']),
+                                "eval_mode": str(response['eval_mode']),
+                                "batch_num": int(response['batch_num'])
                             })
                             
                         conn.table("evaluation_results").insert(db_payload, count="None").execute()
